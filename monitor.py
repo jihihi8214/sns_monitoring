@@ -1,68 +1,45 @@
-name: SNS Monitor
+"""
+정관계/AI-ICT 인사 SNS(X, 페이스북) 모니터링 스크립트
 
-on:
-  schedule:
-    # 매시 정각 (GitHub 서버 부하에 따라 몇 분 지연될 수 있음)
-    - cron: "0 * * * *"
-  workflow_dispatch: {}
+- sources.json에 등록된 인물의 X/페이스북 공개 게시물을 확인합니다.
+- 이전 실행 대비 새 게시물이 있으면 이메일로 알려줍니다.
+- API를 쓰지 않고 브라우저(Playwright)로 공개 페이지를 직접 읽는 방식이라
+  플랫폼의 HTML 구조가 바뀌면 선택자(selector)를 수정해야 할 수 있습니다.
+- 로그인이 필요한 경우 scripts/login_setup.py를 먼저 실행해 세션을 저장해두세요.
 
-permissions:
-  contents: write
+실행:
+    python3 monitor.py
+"""
 
-jobs:
-  monitor:
-    runs-on: ubuntu-latest
-    steps:
-      - name: 저장소 체크아웃
-        uses: actions/checkout@v4
+import os
+import csv
+import json
+import smtplib
+import ssl
+from datetime import datetime
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
 
-      - name: Python 설치
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+from openpyxl import Workbook
+from playwright.sync_api import sync_playwright
 
-      - name: 의존성 설치
-        run: |
-          pip install -r requirements.txt
-          playwright install --with-deps chromium
-          sudo apt-get update && sudo apt-get install -y xvfb
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials as GoogleCredentials
+except ImportError:
+    gspread = None
+    GoogleCredentials = None
 
-      - name: 환경설정 파일 생성
-        run: |
-          cat > .env << EOF
-          EMAIL_TO=${{ secrets.EMAIL_TO }}
-          SMTP_HOST=${{ secrets.SMTP_HOST }}
-          SMTP_PORT=${{ secrets.SMTP_PORT }}
-          SMTP_USERNAME=${{ secrets.SMTP_USERNAME }}
-          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
-          SMTP_FROM=${{ secrets.SMTP_FROM }}
-          EOF
-          mkdir -p data
-          if [ -n "${{ secrets.TWITTER_STATE_B64 }}" ]; then
-            echo "${{ secrets.TWITTER_STATE_B64 }}" | base64 -d > data/twitter_state.json
-          fi
-          if [ -n "${{ secrets.FACEBOOK_STATE_B64 }}" ]; then
-            echo "${{ secrets.FACEBOOK_STATE_B64 }}" | base64 -d > data/facebook_state.json
-          fi
-          if [ -n "${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}" ]; then
-            echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}" | base64 -d > google_service_account.json
-          fi
+BASE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE, "data")
+REPORTS_DIR = os.path.join(BASE, "reports")
+SEEN_PATH = os.path.join(DATA_DIR, "seen.json")
+SOURCES_PATH = os.path.join(BASE, "sources.json")
+ENV_PATH = os.path.join(BASE, ".env")
+CSV_PATH = os.path.join(DATA_DIR, "new_items.csv")
+CSV_HEADER = "확인시각,인물,플랫폼,게시시각표기,내용요약,링크\n"
+EXCEL_PATH = os.path.join(DATA_DIR, "sns_monitoring.xlsx")
 
-      - name: 모니터링 실행
-        env:
-          HEADLESS: "false"
-          GOOGLE_SERVICE_ACCOUNT_PATH: google_service_account.json
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-        run: xvfb-run -a python3 monitor.py
-
-      - name: 변경사항 커밋 (seen.json / CSV / reports)
-        run: |
-          git config user.name "sns-monitor-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add data/seen.json data/new_items.csv data/sns_monitoring.xlsx reports/ 2>/dev/null || true
-          if ! git diff --cached --quiet; then
-            git commit -m "auto: SNS 모니터링 업데이트 ($(date -u +'%Y-%m-%d %H:%M UTC'))"
-            git push
-          else
-            echo "변경사항 없음"
-          fi
+# 봇
