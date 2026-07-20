@@ -16,6 +16,8 @@ import csv
 import json
 import smtplib
 import ssl
+import urllib.request
+import urllib.error
 from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -42,7 +44,6 @@ CSV_PATH = os.path.join(DATA_DIR, "new_items.csv")
 CSV_HEADER = "확인시각,인물,플랫폼,게시시각표기,내용요약,링크\n"
 EXCEL_PATH = os.path.join(DATA_DIR, "sns_monitoring.xlsx")
 
-# 봇 탐지를 조금이라도 줄이기 위한 일반 브라우저 흉내용 컨텍스트 옵션
 CONTEXT_ARGS = {
     "user_agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -52,8 +53,6 @@ CONTEXT_ARGS = {
     "locale": "ko-KR",
 }
 
-
-# ---------- 설정 로드 ----------
 
 def load_env(path):
     env = {}
@@ -94,10 +93,7 @@ def storage_state_path(platform):
     return p if os.path.exists(p) else None
 
 
-# ---------- 수집 ----------
-
 def fetch_twitter_posts(page, handle, limit=5):
-    """x.com/{handle} 최신 트윗을 읽어옵니다."""
     posts = []
     try:
         page.goto(f"https://x.com/{handle}", timeout=30000)
@@ -133,10 +129,6 @@ def fetch_twitter_posts(page, handle, limit=5):
 
 
 def fetch_facebook_posts(page, page_name, limit=5):
-    """facebook.com/{page_name} 최신 게시물을 읽어옵니다.
-    로그인 세션이 있으면 mbasic이 자동으로 일반 facebook.com으로 리다이렉트되는 경우가 있어,
-    role=article(ARIA) 선택자를 우선 사용하고 여러 후보 선택자를 순서대로 시도합니다.
-    """
     posts = []
     try:
         page.goto(f"https://www.facebook.com/{page_name}", timeout=30000)
@@ -163,7 +155,7 @@ def fetch_facebook_posts(page, page_name, limit=5):
 
     for idx, a in enumerate(articles):
         try:
-            text = a.inner_text().strip()
+            text = extract_post_body_text(a)
             link_el = a.locator("a").first
             href = link_el.get_attribute("href") if link_el.count() else None
             post_id = href if href else f"{page_name}_{idx}_{datetime.now().date()}"
@@ -179,10 +171,71 @@ def fetch_facebook_posts(page, page_name, limit=5):
     return posts
 
 
-# ---------- 이메일 ----------
+_FB_NOISE_PATTERNS = (
+    "좋아요", "댓글", "공유", "답글", "모든 공감", "전체보기", "더 보기",
+    "팔로우", "친구 추가", "메시지 보내기", "관련 콘텐츠",
+)
+
+
+def extract_post_body_text(article_locator):
+    for selector in ['[data-ad-preview="message"]', '[data-ad-comet-preview="message"]']:
+        body_el = article_locator.locator(selector).first
+        if body_el.count():
+            body_text = body_el.inner_text().strip()
+            if body_text:
+                return body_text
+
+    raw = article_locator.inner_text().strip()
+    lines = [line.strip() for line in raw.split("\n") if line.strip()]
+    kept = []
+    for line in lines:
+        if any(noise in line for noise in _FB_NOISE_PATTERNS):
+            continue
+        if line.replace(",", "").replace(".", "").isdigit():
+            continue
+        if len(line) <= 1:
+            continue
+        kept.append(line)
+    return " ".join(kept).strip()
+
+
+GEMINI_MODEL = "gemini-2.5-flash"
+
+
+def summarize_text(text):
+    fallback = (text or "").strip()[:300]
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key or not text or not text.strip():
+        return fallback
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"{GEMINI_MODEL}:generateContent?key={api_key}"
+    )
+    prompt = (
+        "다음은 정치인/공직자의 SNS 게시글이야. 핵심 내용만 한국어 1~2문장으로 짧게 요약해줘. "
+        "원문을 그대로 인용하지 말고, 불필요하게 길게 늘이지 마. 요약문만 출력해.\n\n"
+        f"게시글:\n{text[:1500]}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        summary = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        return summary if summary else fallback
+    except Exception as e:
+        print(f"  [경고] AI 요약 실패, 원문 일부로 대체: {e}")
+        return fallback
+
 
 def build_excel_from_csv():
-    """new_items.csv(누적, 최신순) 전체를 계정명/플랫폼/요약/본문 링크 4개 컬럼 엑셀로 만든다."""
     if not os.path.exists(CSV_PATH):
         return None
 
@@ -236,9 +289,6 @@ def send_email(env, subject, body, attachment_path=None):
 
 
 def upload_to_google_sheet(new_items):
-    """구글 시트 맨 위(헤더 바로 다음)에 새 게시물을 최신순으로 삽입한다.
-    GOOGLE_SERVICE_ACCOUNT_PATH, GOOGLE_SHEET_ID 환경변수가 없으면 조용히 건너뛴다.
-    """
     sa_path = os.environ.get("GOOGLE_SERVICE_ACCOUNT_PATH")
     sheet_id = os.environ.get("GOOGLE_SHEET_ID")
 
@@ -262,9 +312,8 @@ def upload_to_google_sheet(new_items):
 
         rows = [
             [item["person"], item["platform"], item["post"]["text"][:300], item["post"]["url"]]
-            for item in new_items  # new_items는 이미 최신순 정렬되어 있음
+            for item in new_items
         ]
-        # 헤더(1행) 바로 다음에 삽입 -> 항상 최신이 위로
         ws.insert_rows(rows, row=2, value_input_option="RAW")
         print(f"  [정보] 구글 시트에 {len(rows)}행 추가 완료")
     except Exception as e:
@@ -283,7 +332,6 @@ def format_report(new_items):
 
 
 def sort_newest_first(new_items):
-    """posted_at(ISO 문자열)이 있으면 그 기준, 없으면 원래 순서 유지하며 뒤로 보냄."""
     def key(item):
         posted_at = item["post"].get("posted_at")
         return posted_at or ""
@@ -298,7 +346,6 @@ def csv_escape(value):
 
 
 def prepend_csv_rows(new_items, run_time_str):
-    """new_items.csv 헤더 바로 다음(파일 최상단)에 이번에 새로 감지된 행들을 끼워 넣는다."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
     if os.path.exists(CSV_PATH):
@@ -326,8 +373,6 @@ def prepend_csv_rows(new_items, run_time_str):
         f.writelines(existing_rows)
 
 
-# ---------- 메인 ----------
-
 def main():
     env = load_env(ENV_PATH)
     persons = load_sources()
@@ -335,8 +380,6 @@ def main():
 
     new_items = []
 
-    # 헤드리스 브라우저는 X 등에서 봇으로 더 쉽게 감지되는 경향이 있어,
-    # HEADLESS=false 환경변수(GitHub Actions에서는 xvfb와 함께 사용)로 일반 브라우저처럼 띄운다.
     run_headless = os.environ.get("HEADLESS", "true").lower() != "false"
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -384,6 +427,10 @@ def main():
         return
 
     new_items = sort_newest_first(new_items)
+
+    for item in new_items:
+        item["post"]["text"] = summarize_text(item["post"]["text"])
+
     run_time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     os.makedirs(REPORTS_DIR, exist_ok=True)
