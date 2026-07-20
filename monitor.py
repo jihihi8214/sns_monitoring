@@ -117,4 +117,171 @@ def fetch_facebook_posts(page, page_name, limit=5):
     print(f"  [디버그] 이동 후 URL: {page.url}")
     print(f"  [디버그] 페이지 제목: {page.title()}")
 
-    # mbasic
+    # mbasic 구조는 자주 바뀔 수 있어 텍스트 블록 단위로 느슨하게 추출
+    articles = page.locator("article").all()[:limit]
+    if not articles:
+        # article 태그가 없을 경우 fallback: 본문 텍스트 블록 시도
+        articles = page.locator("div[data-ft]").all()[:limit]
+
+    print(f"  [디버그] 감지된 게시물 블록 수: {len(articles)}")
+    if not articles:
+        body_snippet = page.locator("body").inner_text()[:200]
+        print(f"  [디버그] 본문 앞부분: {body_snippet}")
+
+    for idx, a in enumerate(articles):
+        try:
+            text = a.inner_text().strip()
+            link_el = a.locator("a").first
+            href = link_el.get_attribute("href") if link_el.count() else None
+            post_id = href if href else f"{page_name}_{idx}_{datetime.now().date()}"
+            if text:
+                posts.append({
+                    "id": f"fb_{page_name}_{hash(post_id)}",
+                    "text": text[:300],
+                    "posted_at": None,
+                    "url": f"https://www.facebook.com/{page_name}",
+                })
+        except Exception:
+            continue
+    return posts
+
+
+# ---------- 이메일 ----------
+
+def send_email(env, subject, body):
+    context = ssl.create_default_context()
+    msg = MIMEText(body)
+    msg["Subject"] = subject
+    msg["From"] = env["SMTP_FROM"]
+    msg["To"] = env["EMAIL_TO"]
+
+    with smtplib.SMTP(env["SMTP_HOST"], int(env["SMTP_PORT"])) as server:
+        server.starttls(context=context)
+        server.login(env["SMTP_USERNAME"], env["SMTP_PASSWORD"])
+        server.sendmail(env["SMTP_FROM"], [env["EMAIL_TO"]], msg.as_string())
+
+
+def format_report(new_items):
+    lines = [f"# SNS 모니터링 새 게시물 ({datetime.now().strftime('%Y-%m-%d %H:%M')})", ""]
+    for item in new_items:
+        lines.append(f"## {item['person']} ({item['platform']})")
+        lines.append(f"- 게시시각: {item['post'].get('posted_at') or '확인불가'}")
+        lines.append(f"- 내용: {item['post']['text'][:300]}")
+        lines.append(f"- 링크: {item['post']['url']}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def sort_newest_first(new_items):
+    """posted_at(ISO 문자열)이 있으면 그 기준, 없으면 원래 순서 유지하며 뒤로 보냄."""
+    def key(item):
+        posted_at = item["post"].get("posted_at")
+        return posted_at or ""
+    return sorted(new_items, key=key, reverse=True)
+
+
+def csv_escape(value):
+    value = "" if value is None else str(value)
+    if any(c in value for c in [",", "\n", '"']):
+        value = '"' + value.replace('"', '""') + '"'
+    return value
+
+
+def prepend_csv_rows(new_items, run_time_str):
+    """new_items.csv 헤더 바로 다음(파일 최상단)에 이번에 새로 감지된 행들을 끼워 넣는다."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+
+    if os.path.exists(CSV_PATH):
+        with open(CSV_PATH, "r", encoding="utf-8") as f:
+            existing_lines = f.readlines()
+        existing_rows = existing_lines[1:] if existing_lines else []
+    else:
+        existing_rows = []
+
+    new_rows = []
+    for item in new_items:
+        row = [
+            run_time_str,
+            item["person"],
+            item["platform"],
+            item["post"].get("posted_at") or "확인불가",
+            item["post"]["text"][:300],
+            item["post"]["url"],
+        ]
+        new_rows.append(",".join(csv_escape(v) for v in row) + "\n")
+
+    with open(CSV_PATH, "w", encoding="utf-8") as f:
+        f.write(CSV_HEADER)
+        f.writelines(new_rows)
+        f.writelines(existing_rows)
+
+
+# ---------- 메인 ----------
+
+def main():
+    env = load_env(ENV_PATH)
+    persons = load_sources()
+    seen = load_seen()
+
+    new_items = []
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+
+        for person in persons:
+            for handle in person.get("twitter", []):
+                state = storage_state_path("twitter")
+                context = browser.new_context(storage_state=state) if state else browser.new_context()
+                page = context.new_page()
+                print(f"확인 중: {person['name']} - X @{handle}")
+                posts = fetch_twitter_posts(page, handle)
+                seen_key = f"tw_{handle}"
+                seen_ids = set(seen.get(seen_key, []))
+                for post in posts:
+                    if post["id"] not in seen_ids:
+                        new_items.append({"person": person["name"], "platform": f"X(@{handle})", "post": post})
+                        seen_ids.add(post["id"])
+                seen[seen_key] = list(seen_ids)
+                context.close()
+
+            for fb_page in person.get("facebook", []):
+                state = storage_state_path("facebook")
+                context = browser.new_context(storage_state=state) if state else browser.new_context()
+                page = context.new_page()
+                print(f"확인 중: {person['name']} - Facebook {fb_page}")
+                posts = fetch_facebook_posts(page, fb_page)
+                seen_key = f"fb_{fb_page}"
+                seen_ids = set(seen.get(seen_key, []))
+                for post in posts:
+                    if post["id"] not in seen_ids:
+                        new_items.append({"person": person["name"], "platform": f"Facebook({fb_page})", "post": post})
+                        seen_ids.add(post["id"])
+                seen[seen_key] = list(seen_ids)
+                context.close()
+
+        browser.close()
+
+    save_seen(seen)
+
+    if not new_items:
+        print("새 게시물 없음, 리포트/CSV/메일 모두 건너뜀")
+        return
+
+    new_items = sort_newest_first(new_items)
+    run_time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+    report_path = os.path.join(REPORTS_DIR, f"{datetime.now().strftime('%Y%m%d_%H%M')}.md")
+    report_text = format_report(new_items)
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(report_text)
+
+    prepend_csv_rows(new_items, run_time_str)
+
+    subject = f"[SNS 모니터링] 새 게시물 {len(new_items)}건"
+    send_email(env, subject, report_text)
+    print(f"메일 발송 완료: {len(new_items)}건")
+
+
+if __name__ == "__main__":
+    main()
