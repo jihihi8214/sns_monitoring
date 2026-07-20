@@ -15,6 +15,7 @@ import os
 import re
 import csv
 import json
+import time
 import smtplib
 import ssl
 import urllib.request
@@ -355,23 +356,36 @@ def summarize_text(text):
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    try:
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": api_key,
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        summary = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        return summary if summary else fallback
-    except Exception as e:
-        print(f"  [경고] AI 요약 실패, 원문 일부로 대체: {e}")
-        return fallback
+    # 무료 티어 분당 요청 한도(429)나 일시적 서버 과부하(503)에 대비해 짧게 재시도한다.
+    max_attempts = 4
+    backoff_seconds = [3, 8, 20]
+    for attempt in range(max_attempts):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            summary = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            return summary if summary else fallback
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503) and attempt < max_attempts - 1:
+                wait = backoff_seconds[attempt]
+                print(f"  [정보] Gemini {e.code} 응답, {wait}초 대기 후 재시도 ({attempt + 1}/{max_attempts})")
+                time.sleep(wait)
+                continue
+            print(f"  [경고] AI 요약 실패, 원문 일부로 대체: {e}")
+            return fallback
+        except Exception as e:
+            print(f"  [경고] AI 요약 실패, 원문 일부로 대체: {e}")
+            return fallback
+    return fallback
 
 
 # ---------- 이메일 ----------
@@ -580,8 +594,11 @@ def main():
 
     new_items = sort_newest_first(new_items)
 
-    for item in new_items:
+    for idx, item in enumerate(new_items):
         item["post"]["text"] = summarize_text(item["post"]["text"])
+        # 무료 티어 분당 요청 한도(429)를 애초에 안 넘도록 호출 사이 텀을 둔다.
+        if idx < len(new_items) - 1:
+            time.sleep(5)
 
     run_time_str = datetime.now().strftime("%Y-%m-%d %H:%M")
 
