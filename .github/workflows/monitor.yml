@@ -24,6 +24,7 @@ jobs:
         run: |
           pip install -r requirements.txt
           playwright install --with-deps chromium
+          sudo apt-get update && sudo apt-get install -y xvfb
 
       - name: 환경설정 파일 생성
         run: |
@@ -44,7 +45,9 @@ jobs:
           fi
 
       - name: 모니터링 실행
-        run: python3 monitor.py
+        env:
+          HEADLESS: "false"
+        run: xvfb-run -a python3 monitor.py
 
       - name: 변경사항 커밋 (seen.json / CSV / reports)
         run: |
