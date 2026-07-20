@@ -29,6 +29,16 @@ ENV_PATH = os.path.join(BASE, ".env")
 CSV_PATH = os.path.join(DATA_DIR, "new_items.csv")
 CSV_HEADER = "확인시각,인물,플랫폼,게시시각표기,내용요약,링크\n"
 
+# 봇 탐지를 조금이라도 줄이기 위한 일반 브라우저 흉내용 컨텍스트 옵션
+CONTEXT_ARGS = {
+    "user_agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    ),
+    "viewport": {"width": 1366, "height": 900},
+    "locale": "ko-KR",
+}
+
 
 # ---------- 설정 로드 ----------
 
@@ -81,6 +91,10 @@ def fetch_twitter_posts(page, handle, limit=5):
         page.wait_for_selector('article[data-testid="tweet"]', timeout=15000)
     except Exception as e:
         print(f"  [경고] @{handle} 트위터 페이지 로드 실패: {e}")
+        print(f"  [디버그] 이동 후 URL: {page.url}")
+        print(f"  [디버그] 페이지 제목: {page.title()}")
+        body_snippet = page.locator("body").inner_text()[:300]
+        print(f"  [디버그] 본문 앞부분: {body_snippet}")
         return posts
 
     articles = page.locator('article[data-testid="tweet"]').all()[:limit]
@@ -106,10 +120,14 @@ def fetch_twitter_posts(page, handle, limit=5):
 
 
 def fetch_facebook_posts(page, page_name, limit=5):
-    """mbasic.facebook.com/{page_name} 최신 게시물을 읽어옵니다 (경량 HTML 버전)."""
+    """facebook.com/{page_name} 최신 게시물을 읽어옵니다.
+    로그인 세션이 있으면 mbasic이 자동으로 일반 facebook.com으로 리다이렉트되는 경우가 있어,
+    role=article(ARIA) 선택자를 우선 사용하고 여러 후보 선택자를 순서대로 시도합니다.
+    """
     posts = []
     try:
-        page.goto(f"https://mbasic.facebook.com/{page_name}", timeout=30000)
+        page.goto(f"https://www.facebook.com/{page_name}", timeout=30000)
+        page.wait_for_timeout(2000)
     except Exception as e:
         print(f"  [경고] {page_name} 페이스북 페이지 로드 실패: {e}")
         return posts
@@ -117,15 +135,17 @@ def fetch_facebook_posts(page, page_name, limit=5):
     print(f"  [디버그] 이동 후 URL: {page.url}")
     print(f"  [디버그] 페이지 제목: {page.title()}")
 
-    # mbasic 구조는 자주 바뀔 수 있어 텍스트 블록 단위로 느슨하게 추출
-    articles = page.locator("article").all()[:limit]
-    if not articles:
-        # article 태그가 없을 경우 fallback: 본문 텍스트 블록 시도
-        articles = page.locator("div[data-ft]").all()[:limit]
+    articles = []
+    for selector in ['[role="article"]', "article", "div[data-ft]"]:
+        found = page.locator(selector).all()
+        if found:
+            print(f"  [디버그] 선택자 '{selector}'로 {len(found)}개 발견")
+            articles = found[:limit]
+            break
 
     print(f"  [디버그] 감지된 게시물 블록 수: {len(articles)}")
     if not articles:
-        body_snippet = page.locator("body").inner_text()[:200]
+        body_snippet = page.locator("body").inner_text()[:500]
         print(f"  [디버그] 본문 앞부분: {body_snippet}")
 
     for idx, a in enumerate(articles):
@@ -176,7 +196,7 @@ def sort_newest_first(new_items):
     """posted_at(ISO 문자열)이 있으면 그 기준, 없으면 원래 순서 유지하며 뒤로 보냄."""
     def key(item):
         posted_at = item["post"].get("posted_at")
-        return posted_at or ""
+        return posted_at or ""  # ISO 문자열은 그대로 비교해도 최신이 더 크게 나옴
     return sorted(new_items, key=key, reverse=True)
 
 
@@ -225,13 +245,19 @@ def main():
 
     new_items = []
 
+    # 헤드리스 브라우저는 X 등에서 봇으로 더 쉽게 감지되는 경향이 있어,
+    # HEADLESS=false 환경변수(GitHub Actions에서는 xvfb와 함께 사용)로 일반 브라우저처럼 띄운다.
+    run_headless = os.environ.get("HEADLESS", "true").lower() != "false"
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=run_headless,
+            args=["--disable-blink-features=AutomationControlled"],
+        )
 
         for person in persons:
             for handle in person.get("twitter", []):
                 state = storage_state_path("twitter")
-                context = browser.new_context(storage_state=state) if state else browser.new_context()
+                context = browser.new_context(**({"storage_state": state} if state else {}), **CONTEXT_ARGS)
                 page = context.new_page()
                 print(f"확인 중: {person['name']} - X @{handle}")
                 posts = fetch_twitter_posts(page, handle)
@@ -246,7 +272,7 @@ def main():
 
             for fb_page in person.get("facebook", []):
                 state = storage_state_path("facebook")
-                context = browser.new_context(storage_state=state) if state else browser.new_context()
+                context = browser.new_context(**({"storage_state": state} if state else {}), **CONTEXT_ARGS)
                 page = context.new_page()
                 print(f"확인 중: {person['name']} - Facebook {fb_page}")
                 posts = fetch_facebook_posts(page, fb_page)
