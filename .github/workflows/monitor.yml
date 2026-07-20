@@ -2,6 +2,7 @@ name: SNS Monitor
 
 on:
   schedule:
+    # 매시 정각 (GitHub 서버 부하에 따라 몇 분 지연될 수 있음)
     - cron: "0 * * * *"
   workflow_dispatch: {}
 
@@ -43,17 +44,22 @@ jobs:
           if [ -n "${{ secrets.FACEBOOK_STATE_B64 }}" ]; then
             echo "${{ secrets.FACEBOOK_STATE_B64 }}" | base64 -d > data/facebook_state.json
           fi
+          if [ -n "${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}" ]; then
+            echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}" | base64 -d > google_service_account.json
+          fi
 
       - name: 모니터링 실행
         env:
           HEADLESS: "false"
+          GOOGLE_SERVICE_ACCOUNT_PATH: google_service_account.json
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         run: xvfb-run -a python3 monitor.py
 
       - name: 변경사항 커밋 (seen.json / CSV / reports)
         run: |
           git config user.name "sns-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/seen.json data/new_items.csv reports/ 2>/dev/null || true
+          git add data/seen.json data/new_items.csv data/sns_monitoring.xlsx reports/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "auto: SNS 모니터링 업데이트 ($(date -u +'%Y-%m-%d %H:%M UTC'))"
             git push
