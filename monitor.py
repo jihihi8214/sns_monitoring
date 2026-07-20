@@ -156,19 +156,46 @@ def fetch_facebook_posts(page, page_name, limit=5):
     for idx, a in enumerate(articles):
         try:
             text = extract_post_body_text(a)
-            link_el = a.locator("a").first
-            href = link_el.get_attribute("href") if link_el.count() else None
-            post_id = href if href else f"{page_name}_{idx}_{datetime.now().date()}"
+            post_url = extract_post_permalink(a, page_name)
+            post_id = post_url if post_url else f"{page_name}_{idx}_{datetime.now().date()}"
             if text:
                 posts.append({
                     "id": f"fb_{page_name}_{hash(post_id)}",
                     "text": text[:300],
                     "posted_at": None,
-                    "url": f"https://www.facebook.com/{page_name}",
+                    "url": post_url,
                 })
         except Exception:
             continue
     return posts
+
+
+_FB_PERMALINK_PATTERNS = ("/posts/", "permalink.php", "story_fbid", "/videos/", "/photo", "/reel/", "/watch/")
+
+
+def extract_post_permalink(article_locator, page_name):
+    """article 안의 링크들 중 실제 게시물 permalink으로 보이는 것을 찾는다.
+    못 찾으면 계정 홈 주소로 대체한다."""
+    fallback_url = f"https://www.facebook.com/{page_name}"
+    try:
+        links = article_locator.locator("a").all()
+    except Exception:
+        return fallback_url
+
+    for link in links:
+        try:
+            href = link.get_attribute("href")
+        except Exception:
+            continue
+        if not href:
+            continue
+        if any(p in href for p in _FB_PERMALINK_PATTERNS):
+            if href.startswith("/"):
+                href = "https://www.facebook.com" + href
+            href = href.split("&__cft__")[0].split("?__cft__")[0]
+            href = href.split("&__tn__")[0]
+            return href
+    return fallback_url
 
 
 _FB_NOISE_PATTERNS = (
