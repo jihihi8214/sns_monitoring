@@ -53,6 +53,7 @@ jobs:
           HEADLESS: "false"
           GOOGLE_SERVICE_ACCOUNT_PATH: google_service_account.json
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: xvfb-run -a python3 monitor.py
 
       - name: 변경사항 커밋 (seen.json / CSV / reports)
