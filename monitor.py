@@ -94,6 +94,7 @@ def storage_state_path(platform):
 
 
 def fetch_twitter_posts(page, handle, limit=5):
+    """x.com/{handle} 최신 트윗을 읽어옵니다."""
     posts = []
     try:
         page.goto(f"https://x.com/{handle}", timeout=30000)
@@ -129,6 +130,7 @@ def fetch_twitter_posts(page, handle, limit=5):
 
 
 def fetch_facebook_posts(page, page_name, limit=5):
+    """facebook.com/{page_name} 최신 게시물을 읽어옵니다."""
     posts = []
     try:
         page.goto(f"https://www.facebook.com/{page_name}", timeout=30000)
@@ -205,6 +207,7 @@ _FB_NOISE_PATTERNS = (
 
 
 def extract_post_body_text(article_locator):
+    """게시물 블록(article) 안에서 좋아요/댓글 수 같은 UI 텍스트를 뺀 실제 본문만 추출한다."""
     for selector in ['[data-ad-preview="message"]', '[data-ad-comet-preview="message"]']:
         body_el = article_locator.locator(selector).first
         if body_el.count():
@@ -226,19 +229,21 @@ def extract_post_body_text(article_locator):
     return " ".join(kept).strip()
 
 
-GEMINI_MODEL = "gemini-2.5-flash"
+# 2026년 구글이 API 키를 "인증(auth) 키"(AQ.로 시작)로 전환하면서,
+# 인증 방식도 URL의 ?key= 파라미터가 아니라 x-goog-api-key 요청 헤더로 바뀌었다.
+GEMINI_MODEL = "gemini-3.5-flash"
 
 
 def summarize_text(text):
+    """Gemini API로 게시글을 1~2문장 한국어 요약으로 바꾼다.
+    GEMINI_API_KEY가 없거나 호출이 실패하면 원문 앞부분(300자)으로 조용히 대체한다.
+    """
     fallback = (text or "").strip()[:300]
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key or not text or not text.strip():
         return fallback
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{GEMINI_MODEL}:generateContent?key={api_key}"
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
     prompt = (
         "다음은 정치인/공직자의 SNS 게시글이야. 핵심 내용만 한국어 1~2문장으로 짧게 요약해줘. "
         "원문을 그대로 인용하지 말고, 불필요하게 길게 늘이지 마. 요약문만 출력해.\n\n"
@@ -250,7 +255,10 @@ def summarize_text(text):
         req = urllib.request.Request(
             url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "x-goog-api-key": api_key,
+            },
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=20) as resp:
@@ -263,6 +271,7 @@ def summarize_text(text):
 
 
 def build_excel_from_csv():
+    """new_items.csv(누적, 최신순) 전체를 계정명/플랫폼/요약/본문 링크 4개 컬럼 엑셀로 만든다."""
     if not os.path.exists(CSV_PATH):
         return None
 
