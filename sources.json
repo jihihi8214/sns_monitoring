@@ -1,0 +1,10 @@
+{
+  "persons": [
+    {
+      "name": "대통령(이재명)",
+      "category": "정관계",
+      "twitter": ["Jaemyung_Lee", "KOREA"],
+      "facebook": ["jaemyunglee"]
+    }
+  ]
+}
