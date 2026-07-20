@@ -5,6 +5,42 @@
       "category": "정관계",
       "twitter": ["Jaemyung_Lee", "KOREA"],
       "facebook": ["jaemyunglee"]
+    },
+    {
+      "name": "더불어민주당 대표(정청래)",
+      "category": "정관계",
+      "twitter": ["ssaribi"],
+      "facebook": ["cheongrae1"]
+    },
+    {
+      "name": "국민의힘 대표(장동혁)",
+      "category": "정관계",
+      "twitter": [],
+      "facebook": ["dhjang6971"]
+    },
+    {
+      "name": "더불어민주당 원내대표(한병도)",
+      "category": "정관계",
+      "twitter": [],
+      "facebook": ["hbd7851"]
+    },
+    {
+      "name": "국민의힘 원내대표(정점식)",
+      "category": "정관계",
+      "twitter": [],
+      "facebook": ["jsjeong0403"]
+    },
+    {
+      "name": "과기정통부 장관 겸 과학기술부총리(배경훈)",
+      "category": "AI/ICT",
+      "twitter": ["msitminister"],
+      "facebook": ["msitminister"]
+    },
+    {
+      "name": "과방위원장(최민희)",
+      "category": "정관계",
+      "twitter": ["minhee_choi_"],
+      "facebook": ["minhee.official"]
     }
   ]
 }
