@@ -673,9 +673,20 @@ def main():
 
     # AI/ICT 관련 게시물만 남기고, 무관한 건 리포트/CSV/엑셀/메일에서 제외한다.
     # (dedup용 seen 기록은 위에서 이미 저장됐으므로, 여기서 걸러져도 다음 실행 때 다시 안 잡힌다.)
+    # SKIP_RELEVANCE_FILTER=true면 필터를 끄고 새 글이면 무조건 통과시킨다.
+    # (스크래핑/메일 파이프라인 자체가 실제로 잘 도는지 테스트할 때, "지금 AI/ICT 글이
+    #  없어서 안 오는 건지" vs "스크래핑이 고장나서 안 오는 건지" 구분하기 위한 용도)
+    skip_filter = os.environ.get("SKIP_RELEVANCE_FILTER", "false").lower() == "true"
+    if skip_filter:
+        print("  [정보] SKIP_RELEVANCE_FILTER=true - AI/ICT 필터 끄고 새 글 전부 통과")
+
     filtered_items = []
     for idx, item in enumerate(new_items):
         is_relevant, summary = classify_and_summarize(item["post"]["text"])
+        if skip_filter:
+            is_relevant = True
+            if not summary:
+                summary = item["post"]["text"][:300]
         if is_relevant:
             item["post"]["text"] = summary
             filtered_items.append(item)
