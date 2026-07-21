@@ -44,15 +44,10 @@ jobs:
           if [ -n "${{ secrets.FACEBOOK_STATE_B64 }}" ]; then
             echo "${{ secrets.FACEBOOK_STATE_B64 }}" | base64 -d > data/facebook_state.json
           fi
-          if [ -n "${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}" ]; then
-            echo "${{ secrets.GOOGLE_SERVICE_ACCOUNT_B64 }}" | base64 -d > google_service_account.json
-          fi
 
       - name: 모니터링 실행
         env:
           HEADLESS: "false"
-          GOOGLE_SERVICE_ACCOUNT_PATH: google_service_account.json
-          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: xvfb-run -a python3 monitor.py
 
