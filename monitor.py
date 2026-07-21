@@ -432,7 +432,7 @@ def classify_and_summarize(text):
 # ---------- 이메일 ----------
 
 def build_excel_from_csv():
-    """new_items.csv(누적, 최신순) 전체를 계정명/플랫폼/요약/본문 링크 4개 컬럼 엑셀로 만든다."""
+    """new_items.csv(누적, 최신순) 전체를 계정명/플랫폼/게시시각/요약/본문 링크 5개 컬럼 엑셀로 만든다."""
     if not os.path.exists(CSV_PATH):
         return None
 
