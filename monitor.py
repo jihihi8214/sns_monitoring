@@ -16,6 +16,7 @@ import re
 import csv
 import json
 import time
+import hashlib
 import smtplib
 import ssl
 import urllib.request
@@ -96,6 +97,13 @@ def save_seen(seen):
 def storage_state_path(platform):
     p = os.path.join(DATA_DIR, f"{platform}_state.json")
     return p if os.path.exists(p) else None
+
+
+def _stable_hash(s):
+    """실행마다 값이 바뀌는 파이썬 내장 hash() 대신, 항상 같은 입력에 같은 값을 내는 해시.
+    (내장 hash()는 프로세스마다 시드가 랜덤이라 매 실행 GitHub Actions job마다 값이 달라져서
+    같은 게시물인데도 seen.json과 매번 다르게 매칭돼 계속 "새 글"로 잘못 잡히는 버그가 있었음)"""
+    return hashlib.md5(s.encode("utf-8")).hexdigest()[:16]
 
 
 # ---------- 수집 ----------
@@ -182,7 +190,7 @@ def _parse_tweets_from_text(body_text, handle, limit=5):
                 j += 1
             text = " ".join(text_lines).strip()
             if text:
-                post_key = f"{posted_label}_{hash(text) & 0xffffffff}"
+                post_key = f"{posted_label}_{_stable_hash(text)}"
                 posts.append({
                     "id": f"tw_{handle}_{post_key}",
                     "text": text[:500],
@@ -231,7 +239,7 @@ def fetch_facebook_posts(page, page_name, limit=5):
             post_id = post_url if post_url else f"{page_name}_{idx}_{datetime.now().date()}"
             if text:
                 posts.append({
-                    "id": f"fb_{page_name}_{hash(post_id)}",
+                    "id": f"fb_{page_name}_{_stable_hash(post_id)}",
                     "text": text[:300],
                     "posted_at": None,
                     "url": post_url,
