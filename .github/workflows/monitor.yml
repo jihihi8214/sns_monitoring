@@ -34,6 +34,7 @@ jobs:
 
       - name: 환경설정 파일 생성
         run: |
+          REPO_NAME="${GITHUB_REPOSITORY#*/}"
           cat > .env << EOF
           EMAIL_TO=${{ secrets.EMAIL_TO }}
           SMTP_HOST=${{ secrets.SMTP_HOST }}
@@ -41,6 +42,7 @@ jobs:
           SMTP_USERNAME=${{ secrets.SMTP_USERNAME }}
           SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           SMTP_FROM=${{ secrets.SMTP_FROM }}
+          PAGES_URL=https://${{ github.repository_owner }}.github.io/${REPO_NAME}/
           EOF
           mkdir -p data
           if [ -n "${{ secrets.TWITTER_STATE_B64 }}" ]; then
@@ -57,11 +59,11 @@ jobs:
           SKIP_RELEVANCE_FILTER: ${{ inputs.skip_relevance_filter }}
         run: xvfb-run -a python3 monitor.py
 
-      - name: 변경사항 커밋 (seen.json / CSV / reports)
+      - name: 변경사항 커밋 (seen.json / CSV / reports / docs)
         run: |
           git config user.name "sns-monitor-bot"
           git config user.email "actions@users.noreply.github.com"
-          git add data/seen.json data/new_items.csv data/sns_monitoring.xlsx data/sns_monitoring.html reports/ 2>/dev/null || true
+          git add data/seen.json data/new_items.csv data/sns_monitoring.xlsx docs/index.html reports/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "auto: SNS 모니터링 업데이트 ($(date -u +'%Y-%m-%d %H:%M UTC'))"
             git push
