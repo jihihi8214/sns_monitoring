@@ -236,10 +236,10 @@ def fetch_facebook_posts(page, page_name, limit=5):
         try:
             text = extract_post_body_text(a)
             post_url = extract_post_permalink(a, page_name)
-            post_id = post_url if post_url else f"{page_name}_{idx}_{datetime.now().date()}"
+            dedup_key = _fb_dedup_key(post_url, page_name, idx)
             if text:
                 posts.append({
-                    "id": f"fb_{page_name}_{_stable_hash(post_id)}",
+                    "id": f"fb_{page_name}_{_stable_hash(dedup_key)}",
                     "text": text[:300],
                     "posted_at": None,
                     "url": post_url,
@@ -250,6 +250,23 @@ def fetch_facebook_posts(page, page_name, limit=5):
 
 
 _FB_PERMALINK_PATTERNS = ("/posts/", "permalink.php", "story_fbid", "/videos/", "/photo", "/reel/", "/watch/")
+
+# 실제 게시물 permalink 안에서 "이 게시물"을 가리키는 고유 ID 부분만 뽑는 패턴.
+# (story_fbid=123..., /posts/pfbid0Abc..., /videos/456... 등)
+_FB_ID_PATTERN = re.compile(r'(?:story_fbid=|/posts/|/videos/|/reel/|/photo(?:\.php)?/?(?:fbid=)?)([A-Za-z0-9_-]+)')
+
+
+def _fb_dedup_key(post_url, page_name, idx):
+    """중복 판정용 안정 키. permalink에 남아있는 나머지 쿼리스트링(추적 파라미터 등)은
+    스크랩할 때마다 값이 미묘하게 바뀔 수 있어, URL 전체 대신 게시물 고유 ID만 뽑아서 쓴다.
+    진짜 permalink을 못 찾아 프로필 홈 주소로 대체된 경우엔 기존처럼 idx+날짜로 대체한다."""
+    fallback_url = f"https://www.facebook.com/{page_name}"
+    if post_url and post_url != fallback_url:
+        m = _FB_ID_PATTERN.search(post_url)
+        if m:
+            return m.group(1)
+        return post_url.split("?")[0]
+    return f"{page_name}_{idx}_{datetime.now().date()}"
 
 
 def extract_post_permalink(article_locator, page_name):
