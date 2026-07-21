@@ -4,7 +4,12 @@ on:
   schedule:
     # 매시 정각 (GitHub 서버 부하에 따라 몇 분 지연될 수 있음)
     - cron: "0 * * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      skip_relevance_filter:
+        description: "테스트용: AI/ICT 필터 끄고 새 글이면 무조건 메일 보내기"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -49,6 +54,7 @@ jobs:
         env:
           HEADLESS: "false"
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SKIP_RELEVANCE_FILTER: ${{ inputs.skip_relevance_filter }}
         run: xvfb-run -a python3 monitor.py
 
       - name: 변경사항 커밋 (seen.json / CSV / reports)
