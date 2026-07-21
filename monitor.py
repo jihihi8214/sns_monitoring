@@ -146,6 +146,9 @@ def _extract_tweets_from_articles(articles, handle):
             post_id = href.split("/")[-1] if href else None
             time_el = a.locator("time").first
             posted_at = time_el.get_attribute("datetime")
+            # datetime 속성은 ISO라 정렬용으로 쓰고, 화면에 실제 보이는 "18시간" 같은
+            # 표기는 따로 posted_display에 담아 사람이 읽기 좋은 값으로 표시한다.
+            posted_display = time_el.inner_text() if time_el.count() else None
             text_el = a.locator('[data-testid="tweetText"]').first
             text = text_el.inner_text() if text_el.count() else ""
             if post_id:
@@ -153,6 +156,7 @@ def _extract_tweets_from_articles(articles, handle):
                     "id": f"tw_{handle}_{post_id}",
                     "text": text.strip(),
                     "posted_at": posted_at,
+                    "posted_display": posted_display,
                     "url": f"https://x.com/{handle}/status/{post_id}",
                 })
         except Exception:
@@ -193,6 +197,9 @@ def _parse_tweets_from_text(body_text, handle, limit=5):
                     "id": f"tw_{handle}_{post_key}",
                     "text": text[:500],
                     "posted_at": None,
+                    # 실제 트윗 ID를 못 얻는 이 경로에서도, 화면에서 읽은 "18h"/"7월 19일"
+                    # 같은 상대 시각 표기는 있으니 그거라도 표시용으로 살려둔다.
+                    "posted_display": posted_label,
                     "url": f"https://x.com/{handle}",
                 })
             i = j
@@ -232,7 +239,7 @@ def fetch_facebook_posts(page, page_name, limit=5):
 
     for idx, a in enumerate(articles):
         try:
-            text = extract_post_body_text(a)
+            text, posted_display = extract_post_body_text(a)
             post_url = extract_post_permalink(a, page_name)
             dedup_key = _fb_dedup_key(post_url, page_name, idx)
             if text:
@@ -240,6 +247,7 @@ def fetch_facebook_posts(page, page_name, limit=5):
                     "id": f"fb_{page_name}_{_stable_hash(dedup_key)}",
                     "text": text[:300],
                     "posted_at": None,
+                    "posted_display": posted_display,
                     "url": post_url,
                 })
         except Exception:
@@ -303,6 +311,17 @@ _FB_NOISE_PATTERNS = (
 # 이걸 클릭해서 펼치지 않으면 본문이 미리보기 몇 글자 + 이 라벨로만 잘려서 스크랩된다.
 _FB_EXPAND_LABELS = ("더 보기", "더보기", "See more", "See More")
 
+# 게시물 상단(작성자명 바로 아래)에 붙는 "5시간", "7월 19일", "어제" 같은 게시 시각 표기.
+# article의 inner_text()에는 이게 본문과 같이 한 줄로 섞여 들어오는데, 지금까지는 이걸
+# 걸러내지 못해 (a) 게시시각을 못 뽑아서 항상 "확인불가"로 나오고, (b) 요약 대상 텍스트에도
+# "…5시간 [본문]…" 처럼 섞여 들어가 AI 요약 품질을 떨어뜨렸다.
+_FB_TIME_PATTERN = re.compile(
+    r'^(방금|어제|그제)$'
+    r'|^\d+\s*(분|시간|일|주|개월|년)(\s*전)?(\s*[·・])?$'
+    r'|^\d{1,2}월\s*\d{1,2}일(\s*[·・])?$'
+    r'|^\d{4}년\s*\d{1,2}월\s*\d{1,2}일.*$'
+)
+
 
 def _expand_post_text(article_locator):
     """게시물이 '더 보기'로 접혀 있으면 클릭해서 전체 본문을 펼친다."""
@@ -326,8 +345,20 @@ def _expand_post_text(article_locator):
 
 
 def extract_post_body_text(article_locator):
-    """게시물 블록(article) 안에서 좋아요/댓글 수 같은 UI 텍스트를 뺀 실제 본문만 추출한다."""
+    """게시물 블록(article) 안에서 좋아요/댓글 수 같은 UI 텍스트를 뺀 실제 본문만 추출한다.
+    반환값: (본문 텍스트, 게시 시각 표기 또는 None)"""
     _expand_post_text(article_locator)
+
+    # article 전체 텍스트에서 게시 시각 표기("5시간", "7월 19일" 등)를 먼저 뽑아둔다.
+    # (1순위 본문 마커를 쓰든 2순위 휴리스틱을 쓰든 시각 표기는 article 텍스트에서
+    #  공통으로 뽑아야 하므로 여기서 한 번만 처리)
+    raw_all = article_locator.inner_text().strip()
+    all_lines = [line.strip() for line in raw_all.split("\n") if line.strip()]
+    posted_display = None
+    for line in all_lines:
+        if _FB_TIME_PATTERN.match(line):
+            posted_display = line
+            break
 
     # 1순위: 페이스북이 광고/게시물 본문에 붙이는 표준 마커
     for selector in ['[data-ad-preview="message"]', '[data-ad-comet-preview="message"]']:
@@ -335,21 +366,21 @@ def extract_post_body_text(article_locator):
         if body_el.count():
             body_text = body_el.inner_text().strip()
             if body_text:
-                return body_text
+                return body_text, posted_display
 
-    # 2순위: article 전체 텍스트에서 UI/숫자성 잡음 줄을 제거하는 휴리스틱
-    raw = article_locator.inner_text().strip()
-    lines = [line.strip() for line in raw.split("\n") if line.strip()]
+    # 2순위: article 전체 텍스트에서 UI/숫자성/시각 표기 잡음 줄을 제거하는 휴리스틱
     kept = []
-    for line in lines:
+    for line in all_lines:
         if any(noise in line for noise in _FB_NOISE_PATTERNS):
             continue
         if line.replace(",", "").replace(".", "").isdigit():
             continue
+        if _FB_TIME_PATTERN.match(line):
+            continue
         if len(line) <= 1:
             continue
         kept.append(line)
-    return " ".join(kept).strip()
+    return " ".join(kept).strip(), posted_display
 
 
 # ---------- AI 요약 ----------
@@ -435,7 +466,7 @@ def classify_and_summarize(text):
 # ---------- 이메일 ----------
 
 def build_excel_from_csv():
-    """new_items.csv(누적, 최신순) 전체를 계정명/플랫폼/게시시각/요약/본문 링크 5개 컬럼 엑셀로 만든다."""
+    """new_items.csv(누적, 최신순) 전체를 계정명/플랫폼/요약/본문 링크 4개 컬럼 엑셀로 만든다."""
     if not os.path.exists(CSV_PATH):
         return None
 
@@ -465,7 +496,7 @@ def build_excel_from_csv():
 
 def build_html_from_csv():
     """new_items.csv(누적, 최신순) 전체를, 엑셀보다 바로 읽기 편하도록 스타일 입힌
-    HTML 표로 만든다. GitHub Pages가 이 파일을 그대로 고정 URL로 서빙한다."""
+    HTML 표로 만든다. 브라우저나 메일 뷰어에서 열면 바로 보기 좋게 렌더링된다."""
     if not os.path.exists(CSV_PATH):
         return None
 
@@ -560,11 +591,17 @@ def send_email(env, subject, body, attachment_paths=None):
         server.sendmail(env["SMTP_FROM"], [env["EMAIL_TO"]], msg.as_string())
 
 
+def _posted_display(post):
+    """게시시각 표시용 값. 실제 시각(posted_at)이 있으면 우선, 없으면 화면에서 읽은
+    상대 시각 표기(posted_display, 예: '5시간', '7월 19일')를 쓰고, 둘 다 없으면 '확인불가'."""
+    return post.get("posted_at") or post.get("posted_display") or "확인불가"
+
+
 def format_report(new_items):
     lines = [f"# SNS 모니터링 새 게시물 ({datetime.now().strftime('%Y-%m-%d %H:%M')})", ""]
     for item in new_items:
         lines.append(f"## {item['person']} ({item['platform']})")
-        lines.append(f"- 게시시각: {item['post'].get('posted_at') or '확인불가'}")
+        lines.append(f"- 게시시각: {_posted_display(item['post'])}")
         lines.append(f"- 내용: {item['post']['text'][:300]}")
         lines.append(f"- 링크: {item['post']['url']}")
         lines.append("")
@@ -603,7 +640,7 @@ def prepend_csv_rows(new_items, run_time_str):
             run_time_str,
             item["person"],
             item["platform"],
-            item["post"].get("posted_at") or "확인불가",
+            _posted_display(item["post"]),
             item["post"]["text"][:300],
             item["post"]["url"],
         ]
