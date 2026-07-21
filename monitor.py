@@ -40,7 +40,10 @@ ENV_PATH = os.path.join(BASE, ".env")
 CSV_PATH = os.path.join(DATA_DIR, "new_items.csv")
 CSV_HEADER = "확인시각,인물,플랫폼,게시시각표기,내용요약,링크\n"
 EXCEL_PATH = os.path.join(DATA_DIR, "sns_monitoring.xlsx")
-HTML_PATH = os.path.join(DATA_DIR, "sns_monitoring.html")
+# GitHub Pages가 이 폴더(docs/)를 그대로 고정 URL로 서빙한다.
+# 매 실행마다 이 파일을 덮어써서 커밋/푸시하면, 링크는 그대로인 채 내용만 갱신된다.
+DOCS_DIR = os.path.join(BASE, "docs")
+HTML_PATH = os.path.join(DOCS_DIR, "index.html")
 
 # 봇 탐지를 조금이라도 줄이기 위한 일반 브라우저 흉내용 컨텍스트 옵션
 CONTEXT_ARGS = {
@@ -462,7 +465,7 @@ def build_excel_from_csv():
 
 def build_html_from_csv():
     """new_items.csv(누적, 최신순) 전체를, 엑셀보다 바로 읽기 편하도록 스타일 입힌
-    HTML 표로 만든다. 브라우저나 메일 뷰어에서 열면 바로 보기 좋게 렌더링된다."""
+    HTML 표로 만든다. GitHub Pages가 이 파일을 그대로 고정 URL로 서빙한다."""
     if not os.path.exists(CSV_PATH):
         return None
 
@@ -523,7 +526,7 @@ def build_html_from_csv():
 </body>
 </html>"""
 
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(DOCS_DIR, exist_ok=True)
     with open(HTML_PATH, "w", encoding="utf-8") as f:
         f.write(doc)
     return HTML_PATH
@@ -713,9 +716,21 @@ def main():
     excel_path = build_excel_from_csv()
     html_path = build_html_from_csv()
 
-    subject = f"[SNS 모니터링] 새 게시물 {len(new_items)}건"
-    send_email(env, subject, report_text, attachment_paths=[html_path, excel_path])
-    print(f"메일 발송 완료: {len(new_items)}건 (첨부: {html_path}, {excel_path})")
+    # HTML은 파일로 첨부하는 대신, GitHub Pages 고정 링크로 안내한다.
+    # (링크는 항상 동일하고, 페이지 내용만 매번 최신으로 갱신됨)
+    pages_url = env.get("PAGES_URL", "").strip()
+    if pages_url:
+        body_text = (
+            report_text
+            + f"\n\n---\n전체 최신 목록 보기(항상 최신으로 갱신됨): {pages_url}\n"
+        )
+    else:
+        body_text = report_text
+        print("  [경고] PAGES_URL이 설정 안 됨 - 메일 본문에 고정 링크를 못 넣었음")
+
+    subject = f"[SNS 모니터링] 새 게시물 {len(new_items)}건 업데이트"
+    send_email(env, subject, body_text, attachment_paths=[excel_path])
+    print(f"메일 발송 완료: {len(new_items)}건 (엑셀 첨부: {excel_path}, 페이지: {html_path})")
 
 
 if __name__ == "__main__":
