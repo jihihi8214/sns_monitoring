@@ -192,7 +192,12 @@ def _parse_tweets_from_text(body_text, handle, limit=5):
                 j += 1
             text = " ".join(text_lines).strip()
             if text:
-                post_key = f"{posted_label}_{_stable_hash(text)}"
+                # id에 posted_label(상대 시각 표기)을 섞으면 안 됨: "5시간"이던 게시물이
+                # 다음 실행 땐 "6시간"으로 바뀌어 있는 등 시간이 지나면 표기 자체가 계속
+                # 달라져서, 내용은 같은 글인데도 매번 새 id가 되어 계속 "새 글"로 잘못
+                # 잡히는 중복 알림 버그가 있었다. 본문 텍스트 해시만으로 id를 만들어야
+                # 시간이 지나도 같은 글이면 항상 같은 id가 나온다.
+                post_key = _stable_hash(text)
                 posts.append({
                     "id": f"tw_{handle}_{post_key}",
                     "text": text[:500],
@@ -241,7 +246,7 @@ def fetch_facebook_posts(page, page_name, limit=5):
         try:
             text, posted_display = extract_post_body_text(a)
             post_url = extract_post_permalink(a, page_name)
-            dedup_key = _fb_dedup_key(post_url, page_name, idx)
+            dedup_key = _fb_dedup_key(post_url, page_name, idx, text)
             if text:
                 posts.append({
                     "id": f"fb_{page_name}_{_stable_hash(dedup_key)}",
@@ -262,16 +267,21 @@ _FB_PERMALINK_PATTERNS = ("/posts/", "permalink.php", "story_fbid", "/videos/", 
 _FB_ID_PATTERN = re.compile(r'(?:story_fbid=|/posts/|/videos/|/reel/|/photo(?:\.php)?/?(?:fbid=)?)([A-Za-z0-9_-]+)')
 
 
-def _fb_dedup_key(post_url, page_name, idx):
+def _fb_dedup_key(post_url, page_name, idx, text=""):
     """중복 판정용 안정 키. permalink에 남아있는 나머지 쿼리스트링(추적 파라미터 등)은
     스크랩할 때마다 값이 미묘하게 바뀔 수 있어, URL 전체 대신 게시물 고유 ID만 뽑아서 쓴다.
-    진짜 permalink을 못 찾아 프로필 홈 주소로 대체된 경우엔 기존처럼 idx+날짜로 대체한다."""
+    진짜 permalink을 못 찾아 프로필 홈 주소로 대체된 경우엔, idx(게시물 순서)나 날짜처럼
+    실행마다 바뀔 수 있는 값 대신 본문 텍스트 해시를 안정 키로 쓴다.
+    (idx는 위에 새 글이 올라오면 밀리고, 날짜는 자정 넘어가면 바뀌어서 둘 다 진짜
+    dedup 키로 못 쓴다 — 같은 글인데도 계속 "새 글"로 잘못 잡히는 중복 버그의 원인이었음)"""
     fallback_url = f"https://www.facebook.com/{page_name}"
     if post_url and post_url != fallback_url:
         m = _FB_ID_PATTERN.search(post_url)
         if m:
             return m.group(1)
         return post_url.split("?")[0]
+    if text:
+        return f"{page_name}_{_stable_hash(text)}"
     return f"{page_name}_{idx}_{datetime.now().date()}"
 
 
@@ -420,9 +430,12 @@ def classify_and_summarize(text):
     )
     payload = {"contents": [{"parts": [{"text": prompt}]}]}
 
-    # 무료 티어 분당 요청 한도(429)나 일시적 서버 과부하(503)에 대비해 짧게 재시도한다.
-    max_attempts = 4
-    backoff_seconds = [3, 8, 20]
+    # 무료 티어 분당 요청 한도(429)나 일시적 서버 과부하(503)에 대비해 재시도한다.
+    # (예전엔 3/8/20초로 짧게 재시도했는데, 같은 1분 구간 안에서 재시도가 끝나버려
+    #  분당 한도에 계속 부딪히는 경우가 많았음. 재시도 간격을 늘려 확실히 다음
+    #  분당 구간으로 넘어가도록 했다.)
+    max_attempts = 5
+    backoff_seconds = [10, 20, 35, 50]
     for attempt in range(max_attempts):
         try:
             req = urllib.request.Request(
@@ -733,8 +746,9 @@ def main():
         else:
             print(f"  [정보] AI/ICT 무관 게시물 제외: {item['person']} ({item['platform']})")
         # 무료 티어 분당 요청 한도(429)를 애초에 안 넘도록 호출 사이 텀을 둔다.
+        # (5초는 새 글이 몇 개만 몰려도 분당 한도에 부딪히기 쉬워서 12초로 늘림)
         if idx < len(new_items) - 1:
-            time.sleep(5)
+            time.sleep(12)
     new_items = filtered_items
 
     if not new_items:
