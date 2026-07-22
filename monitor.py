@@ -649,7 +649,7 @@ def build_html_from_csv():
   .c-link a {{ color: #2563eb; text-decoration: none; white-space: nowrap; }}
   .c-link a:hover {{ text-decoration: underline; }}
   .header-row {{ display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }}
-  .mascot {{ width: 45px; height: 45px; object-fit: contain; }}
+  .mascot {{ width: 57px; height: 57px; object-fit: contain; }}
 </style>
 </head>
 <body>
