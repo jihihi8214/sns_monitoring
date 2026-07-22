@@ -22,7 +22,7 @@ import smtplib
 import ssl
 import urllib.request
 import urllib.error
-from datetime import datetime
+from datetime import datetime, timedelta, date
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -476,6 +476,99 @@ def classify_and_summarize(text):
     return True, fallback
 
 
+# 게시글 하나당 Gemini를 한 번씩 부르면 새 글이 몇 개만 몰려도 분당 요청 한도(429)에
+# 쉽게 걸린다. 여러 게시글을 하나의 프롬프트에 묶어서 한 번의 호출로 판별+요약을
+# 같이 받아오면, 같은 작업량인데도 실제 API 호출 횟수는 이 배치 크기만큼 줄어든다.
+GEMINI_BATCH_SIZE = 5
+
+
+def classify_and_summarize_batch(texts):
+    """여러 게시글을 한 번의 Gemini 호출로 한꺼번에 판별+요약한다.
+
+    texts: 게시글 본문 문자열 리스트
+    반환값: [(is_relevant, summary_text), ...] — texts와 같은 순서/길이.
+    - GEMINI_API_KEY가 없거나 호출이 계속 실패하면, 걸러내지 못하고 각 항목을
+      원문 일부로 통과시킨다(필터링 오류로 진짜 관련 게시물을 놓치는 것보다,
+      일단 보여주는 쪽이 안전하다고 판단).
+    - 응답 배열에서 특정 index가 빠져 있거나 파싱이 안 되면, 그 항목만 개별적으로
+      fail-open 처리한다(다른 항목들은 정상 처리된 그대로 유지).
+    """
+    fallbacks = [(t or "").strip()[:300] for t in texts]
+    fail_open_result = [(True, fb) for fb in fallbacks]
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        print("  [경고] GEMINI_API_KEY 환경변수가 비어있음 - AI/ICT 관련도 판별 없이 그대로 통과")
+        return fail_open_result
+
+    items_block = "\n\n".join(
+        f"[{i}] {(t or '').strip()[:600]}" for i, t in enumerate(texts)
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    prompt = (
+        "다음은 정치인/공직자의 SNS 게시글 여러 개야. 각 게시글 앞에 [0], [1]... 번호가 붙어있어. "
+        "게시글마다 아래 두 가지를 판단해서, 입력한 개수와 순서 그대로 JSON 배열로만 답해줘. "
+        "다른 설명이나 코드블록 없이 JSON 배열 하나만 출력해.\n\n"
+        "1) relevant: 그 글이 AI(인공지능)·ICT(정보통신기술) 정책/산업/기술/규제와 직접 관련이 있으면 true, "
+        "일반 정치·의전·지역구 활동·무관한 주제면 false.\n"
+        "2) summary: relevant가 true일 때만 작성. 그 글이 '무엇에 대한' 글인지 한국어 한 문장으로 압축해줘. "
+        "'~했습니다/~합니다' 식으로 내용을 그대로 풀어 쓰지 말고, 핵심 주제·대상·쟁점이 드러나는 "
+        "제목/헤드라인 톤으로. relevant가 false면 빈 문자열.\n\n"
+        '형식: [{"index": 0, "relevant": true, "summary": "..."}, {"index": 1, "relevant": false, "summary": ""}]\n\n'
+        f"게시글들:\n{items_block}"
+    )
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+
+    max_attempts = 5
+    backoff_seconds = [10, 20, 35, 50]
+    for attempt in range(max_attempts):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": api_key,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            if raw.startswith("```"):
+                raw = raw.strip("`")
+                if raw.lower().startswith("json"):
+                    raw = raw[4:]
+                raw = raw.strip()
+            parsed = json.loads(raw)
+
+            results = list(fail_open_result)  # 기본값: 응답에 없는 index는 fail-open 유지
+            for entry in parsed:
+                try:
+                    idx = int(entry.get("index"))
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                if 0 <= idx < len(texts):
+                    is_relevant = bool(entry.get("relevant"))
+                    summary = (entry.get("summary") or "").strip()
+                    if is_relevant and not summary:
+                        summary = fallbacks[idx]
+                    results[idx] = (is_relevant, summary if is_relevant else "")
+            return results
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 503) and attempt < max_attempts - 1:
+                wait = backoff_seconds[attempt]
+                print(f"  [정보] Gemini {e.code} 응답(배치 {len(texts)}건), {wait}초 대기 후 재시도 ({attempt + 1}/{max_attempts})")
+                time.sleep(wait)
+                continue
+            print(f"  [경고] AI 관련도 판별/요약(배치) 실패, 걸러내지 않고 원문 일부로 통과: {e}")
+            return fail_open_result
+        except Exception as e:
+            print(f"  [경고] AI 관련도 판별/요약(배치) 실패, 걸러내지 않고 원문 일부로 통과: {e}")
+            return fail_open_result
+    return fail_open_result
+
+
 # ---------- 이메일 ----------
 
 def build_excel_from_csv():
@@ -621,6 +714,64 @@ def format_report(new_items):
     return "\n".join(lines)
 
 
+# 이 날짜 이전 게시물은 모니터링 대상에서 제외한다. (계정당 최대 5개까지 긁어오다 보니,
+# 활동이 뜸한 계정은 오래된 글이 스크랩 범위에 우연히 걸려서 "새 글"처럼 잡히는 경우가
+# 있었음 — 그걸 막기 위한 시작 기준일.)
+MONITOR_START_DATE = date(2026, 7, 21)
+
+
+def _estimate_posted_date(post, now=None):
+    """posted_at(ISO) 또는 posted_display(상대/절대 시각 표기)로부터 게시글의 대략적인
+    작성 날짜를 추정한다. 둘 다 없거나 알 수 없는 형식이면 None을 반환한다."""
+    now = now or datetime.now()
+
+    posted_at = post.get("posted_at")
+    if posted_at:
+        try:
+            return datetime.fromisoformat(posted_at.replace("Z", "+00:00")).date()
+        except Exception:
+            pass
+
+    label = (post.get("posted_display") or "").strip()
+    if not label:
+        return None
+
+    if label == "방금":
+        return now.date()
+    if label == "어제":
+        return (now - timedelta(days=1)).date()
+    if label == "그제":
+        return (now - timedelta(days=2)).date()
+
+    m = re.match(r'^(\d+)\s*(초|분|시간|일|주|개월|년)', label)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        days = {"초": 0, "분": 0, "시간": 0, "일": n, "주": n * 7, "개월": n * 30, "년": n * 365}.get(unit, 0)
+        return (now - timedelta(days=days)).date()
+
+    m = re.match(r'^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일', label)
+    if m:
+        try:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+
+    m = re.match(r'^(\d{1,2})월\s*(\d{1,2})일', label)
+    if m:
+        try:
+            month, day_ = int(m.group(1)), int(m.group(2))
+            candidate = date(now.year, month, day_)
+            # "7월 19일"처럼 연도가 없는 표기가 미래 날짜로 계산되면(예: 지금은 1월인데
+            # 표기가 12월인 경우) 작년 걸로 본다.
+            if candidate > now.date():
+                candidate = date(now.year - 1, month, day_)
+            return candidate
+        except ValueError:
+            return None
+
+    return None
+
+
 def sort_newest_first(new_items):
     """posted_at(ISO 문자열)이 있으면 그 기준, 없으면 원래 순서 유지하며 뒤로 보냄."""
     def key(item):
@@ -724,6 +875,24 @@ def main():
 
     new_items = sort_newest_first(new_items)
 
+    # MONITOR_START_DATE 이전 게시물은 제외한다. 날짜를 못 정한 항목(게시시각 표기 자체가
+    # 없거나 못 읽은 경우)은 실수로 진짜 새 글을 놓치는 것보다 안전하니 일단 통과시킨다.
+    before_date_filter = len(new_items)
+    dated_items = []
+    for item in new_items:
+        posted_date = _estimate_posted_date(item["post"])
+        if posted_date is not None and posted_date < MONITOR_START_DATE:
+            print(f"  [정보] {MONITOR_START_DATE} 이전 게시물 제외 (추정 {posted_date}): {item['person']} ({item['platform']})")
+            continue
+        dated_items.append(item)
+    new_items = dated_items
+    if len(new_items) != before_date_filter:
+        print(f"  [정보] 날짜 필터로 {before_date_filter - len(new_items)}건 제외됨")
+
+    if not new_items:
+        print(f"{MONITOR_START_DATE} 이후 새 게시물 없음, 리포트/CSV/메일 모두 건너뜀")
+        return
+
     # AI/ICT 관련 게시물만 남기고, 무관한 건 리포트/CSV/엑셀/메일에서 제외한다.
     # (dedup용 seen 기록은 위에서 이미 저장됐으므로, 여기서 걸러져도 다음 실행 때 다시 안 잡힌다.)
     # SKIP_RELEVANCE_FILTER=true면 필터를 끄고 새 글이면 무조건 통과시킨다.
@@ -733,21 +902,26 @@ def main():
     if skip_filter:
         print("  [정보] SKIP_RELEVANCE_FILTER=true - AI/ICT 필터 끄고 새 글 전부 통과")
 
+    # 게시글 하나당 호출 1번씩 대신, GEMINI_BATCH_SIZE개씩 묶어서 한 번의 호출로
+    # 판별+요약을 같이 받아온다 (호출 횟수 자체를 줄여서 429를 애초에 덜 만나게 함).
     filtered_items = []
-    for idx, item in enumerate(new_items):
-        is_relevant, summary = classify_and_summarize(item["post"]["text"])
-        if skip_filter:
-            is_relevant = True
-            if not summary:
-                summary = item["post"]["text"][:300]
-        if is_relevant:
-            item["post"]["text"] = summary
-            filtered_items.append(item)
-        else:
-            print(f"  [정보] AI/ICT 무관 게시물 제외: {item['person']} ({item['platform']})")
-        # 무료 티어 분당 요청 한도(429)를 애초에 안 넘도록 호출 사이 텀을 둔다.
-        # (5초는 새 글이 몇 개만 몰려도 분당 한도에 부딪히기 쉬워서 12초로 늘림)
-        if idx < len(new_items) - 1:
+    for batch_start in range(0, len(new_items), GEMINI_BATCH_SIZE):
+        batch = new_items[batch_start: batch_start + GEMINI_BATCH_SIZE]
+        texts = [item["post"]["text"] for item in batch]
+        results = classify_and_summarize_batch(texts)
+        for item, (is_relevant, summary) in zip(batch, results):
+            if skip_filter:
+                is_relevant = True
+                if not summary:
+                    summary = item["post"]["text"][:300]
+            if is_relevant:
+                item["post"]["text"] = summary
+                filtered_items.append(item)
+            else:
+                print(f"  [정보] AI/ICT 무관 게시물 제외: {item['person']} ({item['platform']})")
+        # 배치 자체가 호출 수를 크게 줄여주지만, 새 글이 아주 많아 배치가 여러 개일
+        # 때를 대비해 배치 사이에도 안전하게 텀을 둔다.
+        if batch_start + GEMINI_BATCH_SIZE < len(new_items):
             time.sleep(12)
     new_items = filtered_items
 
