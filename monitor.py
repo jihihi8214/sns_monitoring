@@ -648,10 +648,15 @@ def build_html_from_csv():
   .c-summary {{ max-width: 480px; }}
   .c-link a {{ color: #2563eb; text-decoration: none; white-space: nowrap; }}
   .c-link a:hover {{ text-decoration: underline; }}
+  .header-row {{ display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }}
+  .mascot {{ width: 34px; height: 34px; object-fit: contain; }}
 </style>
 </head>
 <body>
-  <h1>SNS 모니터링 ({len(reader)}건, 최신순)</h1>
+  <div class="header-row">
+    <img class="mascot" src="mascot.png" alt="마스코트" onerror="this.style.display='none'">
+    <h1 style="margin:0;">SNS 모니터링 ({len(reader)}건, 최신순)</h1>
+  </div>
   <table>
     <thead>
       <tr><th>계정명</th><th>플랫폼</th><th>게시시각</th><th>요약</th><th>본문 링크</th></tr>
