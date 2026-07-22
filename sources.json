@@ -3,7 +3,7 @@
     {
       "name": "대통령(이재명)",
       "category": "정관계",
-      "twitter": ["Jaemyung_Lee", "KOREA"],
+      "twitter": ["Jaemyung_Lee"],
       "facebook": ["jaemyunglee"]
     },
     {
@@ -37,10 +37,22 @@
       "facebook": ["msitminister"]
     },
     {
-      "name": "과방위원장(최민희)",
-      "category": "정관계",
-      "twitter": ["minhee_choi_"],
-      "facebook": ["minhee.official"]
+      "name": "과방위원장(송기헌)",
+      "category": "과방위원장",
+      "twitter": [],
+      "facebook": ["peacesong1.official"]
+    },
+    {
+      "name": "개인정보보호위원회(송경희)",
+      "category": "개보위",
+      "twitter": ["kh_song8"],
+      "facebook": ["profile.php?id=100052519089631"]
+    },
+    {
+      "name": "방통위(김종철)",
+      "category": "방통위",
+      "twitter": ["jkim386_kmcc"],
+      "facebook": ["jkim386.kmcc"]
     }
   ]
 }
