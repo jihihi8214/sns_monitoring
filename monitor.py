@@ -171,6 +171,21 @@ _TW_TIME_PATTERN = re.compile(
 # 좋아요/리트윗/조회수 등 참여수 숫자 라인("372", "1.5천", "3.6만" 등)
 _TW_STAT_PATTERN = re.compile(r'^[\d,.\s]+(천|만)?$')
 
+# 인용/답글 트윗이 같이 캡처될 때, 그 안에 섞여 들어오는 "16h", "7월 27일" 같은 상대
+# 시각 표기. 같은 트윗이어도 시간이 지나면 이 표기가 계속 바뀌어서, id 해시 계산에
+# 이 텍스트를 그대로 쓰면 같은 글인데도 매번 다른 id가 나와버리는 문제가 있었다.
+_EMBEDDED_TIME_TOKEN_PATTERN = re.compile(
+    r'\b\d+(초|분|시간|일|주|개월|년|h|m|s)\b|\b\d{1,2}월\s*\d{1,2}일\b'
+)
+
+
+def _normalize_for_hash(text):
+    """dedup id 해시 계산 전용 정규화. 인용 트윗 등에 섞여 들어오는, 시간이 지나면서
+    계속 바뀌는 상대 시각 토큰을 제거한 뒤 해시를 계산해서, 같은 글이면 언제 다시
+    스크랩하든 항상 같은 id가 나오게 한다(화면 표시용 text 원본은 그대로 유지)."""
+    cleaned = _EMBEDDED_TIME_TOKEN_PATTERN.sub('', text)
+    return re.sub(r'\s+', ' ', cleaned).strip()
+
 
 def _parse_tweets_from_text(body_text, handle, limit=5):
     """article 요소를 못 찾을 때 body 텍스트에서 트윗을 휴리스틱으로 파싱하는 최후 수단.
@@ -197,7 +212,7 @@ def _parse_tweets_from_text(body_text, handle, limit=5):
                 # 달라져서, 내용은 같은 글인데도 매번 새 id가 되어 계속 "새 글"로 잘못
                 # 잡히는 중복 알림 버그가 있었다. 본문 텍스트 해시만으로 id를 만들어야
                 # 시간이 지나도 같은 글이면 항상 같은 id가 나온다.
-                post_key = _stable_hash(text)
+                post_key = _stable_hash(_normalize_for_hash(text))
                 posts.append({
                     "id": f"tw_{handle}_{post_key}",
                     "text": text[:500],
