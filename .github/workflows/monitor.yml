@@ -14,6 +14,15 @@ on:
 permissions:
   contents: write
 
+# 이전 실행이 아직 안 끝났는데 다음 정각 실행이 겹쳐서 시작되는 걸 막는다.
+# (Gemini 재시도로 실행 시간이 길어지면 겹칠 수 있는데, 겹치면 두 실행이 seen.json을
+# 각자 다르게 커밋/푸시하면서 한쪽 기록이 통째로 유실돼 같은 글이 중복으로 다시
+# 올라오는 버그가 있었음. cancel-in-progress: false라서 취소가 아니라 "대기열"에
+# 줄을 서게 되어, 먼저 시작한 실행이 끝난 뒤 순서대로 안전하게 실행된다.)
+concurrency:
+  group: sns-monitor
+  cancel-in-progress: false
+
 jobs:
   monitor:
     runs-on: ubuntu-latest
@@ -66,7 +75,16 @@ jobs:
           git add data/seen.json data/new_items.csv data/sns_monitoring.xlsx docs/index.html reports/ 2>/dev/null || true
           if ! git diff --cached --quiet; then
             git commit -m "auto: SNS 모니터링 업데이트 ($(date -u +'%Y-%m-%d %H:%M UTC'))"
-            git push
+            # concurrency 설정으로 겹칠 일은 없지만, 혹시라도 원격에 새 커밋이 먼저
+            # 올라와 있으면(push 거부) rebase로 받아서 재시도한다. 이러면 seen.json
+            # 갱신 내용이 유실되지 않는다.
+            for i in 1 2 3; do
+              if git push; then
+                break
+              fi
+              echo "push 실패, 원격 변경사항 받아서 재시도 ($i/3)"
+              git pull --rebase
+            done
           else
             echo "변경사항 없음"
           fi
