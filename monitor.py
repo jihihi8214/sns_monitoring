@@ -767,12 +767,11 @@ def _estimate_posted_date(post, now=None):
     if label == "그제":
         return (now - timedelta(days=2)).date()
 
-    m = re.match(r'^(\d+)\s*(초|분|시간|일|주|개월|년)', label)
-    if m:
-        n, unit = int(m.group(1)), m.group(2)
-        days = {"초": 0, "분": 0, "시간": 0, "일": n, "주": n * 7, "개월": n * 30, "년": n * 365}.get(unit, 0)
-        return (now - timedelta(days=days)).date()
-
+    # 절대 날짜 표기("2026년 7월 6일")를 상대 시각(며칠/개월/년 전) 표기보다 먼저 확인해야
+    # 한다. 아래 상대 시각 정규식은 원래 문자열 끝까지 매치를 요구하지 않았어서, "2026년..."의
+    # "2026"을 "2026년 전"(2026*365일 전)으로 잘못 해석해 날짜가 서기 2년대로 튀어버리는
+    # 버그가 있었다("2026년 7월 6일"이 상대 시각 정규식에 먼저 걸려 절대 날짜 정규식까지
+    # 아예 도달하지 못했음).
     m = re.match(r'^(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일', label)
     if m:
         try:
@@ -792,6 +791,14 @@ def _estimate_posted_date(post, now=None):
             return candidate
         except ValueError:
             return None
+
+    # 상대 시각 표기는 문자열 전체가 "숫자+단위(+전)(+·)" 형태일 때만 매치하도록 끝까지
+    # 고정한다(위 절대 날짜 케이스들과 겹쳐 오매치되는 걸 막기 위함).
+    m = re.match(r'^(\d+)\s*(초|분|시간|일|주|개월|년)(\s*전)?(\s*[·・])?$', label)
+    if m:
+        n, unit = int(m.group(1)), m.group(2)
+        days = {"초": 0, "분": 0, "시간": 0, "일": n, "주": n * 7, "개월": n * 30, "년": n * 365}.get(unit, 0)
+        return (now - timedelta(days=days)).date()
 
     return None
 
