@@ -283,20 +283,24 @@ _FB_ID_PATTERN = re.compile(r'(?:story_fbid=|/posts/|/videos/|/reel/|/photo(?:\.
 
 
 def _fb_dedup_key(post_url, page_name, idx, text=""):
-    """중복 판정용 안정 키. permalink에 남아있는 나머지 쿼리스트링(추적 파라미터 등)은
-    스크랩할 때마다 값이 미묘하게 바뀔 수 있어, URL 전체 대신 게시물 고유 ID만 뽑아서 쓴다.
-    진짜 permalink을 못 찾아 프로필 홈 주소로 대체된 경우엔, idx(게시물 순서)나 날짜처럼
-    실행마다 바뀔 수 있는 값 대신 본문 텍스트 해시를 안정 키로 쓴다.
-    (idx는 위에 새 글이 올라오면 밀리고, 날짜는 자정 넘어가면 바뀌어서 둘 다 진짜
-    dedup 키로 못 쓴다 — 같은 글인데도 계속 "새 글"로 잘못 잡히는 중복 버그의 원인이었음)"""
+    """중복 판정용 안정 키. 본문 텍스트 해시를 최우선으로 쓴다.
+
+    permalink에 들어있는 story_fbid=pfbid... 값은 안정적인 고유 ID가 아니다 — Meta가
+    스크래핑 방지를 위해 "타임스탬프 + 내부 게시물 ID"를 조합해 만드는, 시간이 지나면
+    값 자체가 바뀌도록 설계한 pseudonymized ID(PFBID)다. 그래서 같은 게시물을 며칠 뒤
+    다시 스크랩하면 URL의 pfbid가 달라져서, URL 기반 dedup 키로 쓰면 내용은 그대로인
+    게시물이 계속 "새 글"로 잘못 잡히는 문제가 있었다(요약도 그때마다 다시 생성돼
+    미묘하게 다른 문구로 여러 번 올라옴). 본문 텍스트는 시간이 지나도 안 바뀌니
+    이걸 1순위 키로 쓰고, permalink ID는 텍스트를 못 뽑은 경우(사진만 있는 글 등)에만
+    차선책으로 쓴다."""
+    if text:
+        return f"{page_name}_{_stable_hash(_normalize_for_hash(text))}"
     fallback_url = f"https://www.facebook.com/{page_name}"
     if post_url and post_url != fallback_url:
         m = _FB_ID_PATTERN.search(post_url)
         if m:
             return m.group(1)
         return post_url.split("?")[0]
-    if text:
-        return f"{page_name}_{_stable_hash(text)}"
     return f"{page_name}_{idx}_{datetime.now().date()}"
 
 
